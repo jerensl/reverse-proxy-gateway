@@ -3,10 +3,22 @@ services:
   gateway:
     build:
       context: docker/app-dev
+      dockerfile: Dockerfile
     volumes:
       - ./internal:/internal
-    working_dir: /internal/reverse-proxy
+    working_dir: /internal/gateway
     ports:
       - "127.0.0.1:5000:$PORT"
+    env_file:
+      - .env
+  users:
+    build:
+      context: docker/app-dev
+      dockerfile: Dockerfile
+    volumes:
+      - ./internal:/internal
+    working_dir: /internal/users
+    ports:
+      - "127.0.0.1:5001:$PORT"
     env_file:
       - .env
