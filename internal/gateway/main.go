@@ -18,7 +18,7 @@ func main() {
 }
 
 func UsersReverseProxy(w http.ResponseWriter, r *http.Request) {
-	host, err := url.Parse(fmt.Sprint(os.Getenv("USERS_SERVICE")))
+	host, err := url.Parse(os.Getenv("USERS_SERVICE"))
 	if err != nil {
 		w.WriteHeader(http.StatusBadGateway)
 		return

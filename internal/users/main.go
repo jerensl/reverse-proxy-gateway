@@ -16,5 +16,7 @@ func main() {
 }
 
 func SayHalloHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("Hello from users")
+
 	fmt.Fprintf(w, "Hello from users service")
 }
