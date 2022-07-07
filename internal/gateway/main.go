@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
@@ -15,23 +16,13 @@ func main() {
 	users := strings.Split(os.Getenv("USERS_SERVICE"), ";")
 
 	for _, user := range users {
-		serviceUrl, err := url.Parse(user)
-		if err != nil {
-			log.Fatal(err)
-		}
-
-		reverseProxy := httputil.NewSingleHostReverseProxy(serviceUrl)
-
-		serverPool.AddServer(&Backend{
-			URL: serviceUrl,
-			ReverseProxy: reverseProxy,
-		})
+		serverPool.AddServer(user)
 	} 
 
-	handler := http.HandlerFunc(UsersLoadBalancer)
+	http.HandleFunc("/", UsersLoadBalancer)
 
 	fmt.Printf("Starting users service at port: %v", os.Getenv("PORT"))
-	if err := http.ListenAndServe(":"+os.Getenv("PORT"), handler); err != nil {
+	if err := http.ListenAndServe(":"+os.Getenv("PORT"), nil); err != nil {
 		panic(err)
 	}
 }
@@ -46,30 +37,46 @@ type ServerPool struct {
 	current uint64
 }
 
-func (bp *ServerPool) AddServer(backend *Backend) {
-	bp.Backends = append(bp.Backends, backend)
+func (bp *ServerPool) AddServer(host string) {
+	serviceUrl, err := url.Parse(host)
+	if err != nil {
+		log.Fatal(err)
+	}
+	
+	reverseProxy := httputil.NewSingleHostReverseProxy(serviceUrl)
+	reverseProxy.ErrorHandler = UsersLoadBalancerErrorHandler
+
+	bp.Backends = append(bp.Backends, &Backend{
+		URL: serviceUrl,
+		ReverseProxy: reverseProxy,
+	})
 }
 
 func (bp *ServerPool) GetNextIndex() int {
+	if int(atomic.LoadUint64(&bp.current)) > len(bp.Backends)*2-1 {
+		atomic.StoreUint64(&bp.current, 0)
+	}
+
 	return int(atomic.AddUint64(&bp.current, uint64(1)) % uint64(len(bp.Backends)))
 }
 
 func (bp *ServerPool) GetNextServer() *Backend {
-	start := bp.GetNextIndex()
-	end := len(bp.Backends) + start
+	index := bp.GetNextIndex()
 
-	for i := start; i < end; i++ {
-		index := i % len(bp.Backends)
-
-		atomic.StoreUint64(&bp.current, uint64(index))
-
-		return bp.Backends[index]
-	}
-
-	return nil
+	return bp.Backends[index]
 }
 
 var serverPool ServerPool
+
+const Visit int = 1
+
+func GetVisitingNodeFromContext(r *http.Request) int {
+	if visit, ok := r.Context().Value(Visit).(int); ok {
+		return visit
+	}
+
+	return 0
+}
 
 func UsersLoadBalancer(w http.ResponseWriter, r *http.Request) {
 	server := serverPool.GetNextServer()
@@ -77,16 +84,15 @@ func UsersLoadBalancer(w http.ResponseWriter, r *http.Request) {
 	server.ReverseProxy.ServeHTTP(w, r)
 }
 
-func UsersReverseProxy(w http.ResponseWriter, r *http.Request) {
-	host, err := url.Parse(os.Getenv("USERS_SERVICE"))
-	if err != nil {
-		w.WriteHeader(http.StatusBadGateway)
+func UsersLoadBalancerErrorHandler(w http.ResponseWriter, r *http.Request, err error) {
+	visiting := GetVisitingNodeFromContext(r)
+
+	if visiting > len(serverPool.Backends) {
+		
+		http.Error(w, "Service not available", http.StatusServiceUnavailable)
 		return
 	}
-
-	reverseProxy := httputil.NewSingleHostReverseProxy(host)
-	if reverseProxy != nil {
-		reverseProxy.ServeHTTP(w, r)
-	}
-	http.Error(w, "Service not available", http.StatusServiceUnavailable)
+	
+	ctx := context.WithValue(r.Context(), Visit, visiting+1)
+	UsersLoadBalancer(w, r.WithContext(ctx))
 }
